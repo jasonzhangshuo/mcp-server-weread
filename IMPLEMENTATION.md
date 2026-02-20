@@ -39,6 +39,10 @@ CC_PASSWORD=kkQrVY49H5LMXNB3mZQET5
 
 `WeReadApi` 在服务启动时初始化为单例，只调用一次 CookieCloud 获取 Cookie。
 
+**Cookie 保活机制**：在 CookieCloud 浏览器扩展的「保活」选项中填入 `https://weread.qq.com`，扩展会定期访问该地址保持会话有效，防止 `wr_skey` 因长时间不活跃而过期。
+
+**Cookie 自动刷新**：当 API 返回 `-2010`（会话失效）或 `-2012`（Cookie 过期）时，服务器会重置初始化状态，下一次 retry 自动重新从 CookieCloud 拉取最新 Cookie，无需手动重启服务。
+
 ## Claude Desktop 配置
 
 配置文件路径：`~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -83,6 +87,7 @@ CC_PASSWORD=kkQrVY49H5LMXNB3mZQET5
   - `finishReading`（是否读完）
   - `progress`（百分比）
   - `readingTimeFormatted`（如"3小时20分钟"）
+  - `last_read_time`（ISO 格式，可用于判断"最近一周"等时间筛选）
   - `noteCount`, `bookmarkCount`
 
 > 注意：导入书籍（`bookId` 以 `CB_` 开头）的笔记无法通过微信读书 API 读取，需使用 `get_imported_book_highlights`。
@@ -128,7 +133,7 @@ CC_PASSWORD=kkQrVY49H5LMXNB3mZQET5
 - `chapters`：树状章节结构，每章包含 `highlights`（划线）和 `notes`（笔记）
 - `uncategorized`：未归入章节的内容
 
-> 注意：仅适用于微信读书原生书籍，导入书籍用 `get_imported_book_highlights`。
+> 注意：仅适用于微信读书原生书籍（非 `CB_` 前缀）。传入导入书籍 ID 时会直接返回错误并提示使用 `get_imported_book_highlights`。
 
 ---
 
@@ -174,9 +179,11 @@ CC_PASSWORD=kkQrVY49H5LMXNB3mZQET5
 - 每本书只保留 8 个核心字段（去掉分类、书单、价格等）
 - 默认最多返回 100 本，按活跃度排序
 
-### WeReadApi 单例
+### WeReadApi 单例与 Cookie 自动刷新
 
 `WeReadApi` 实例化于服务启动时，所有工具调用共享同一实例，避免每次请求都重新调用 CookieCloud。
+
+当 API 返回 `-2010`/`-2012` 时，`handleErrcode` 将 `initialized` 重置为 `false`，`retry` 机制会触发 `ensureInitialized()` 重新从 CookieCloud 拉取最新 Cookie，整个过程对调用方透明。
 
 ### 错误返回格式
 
