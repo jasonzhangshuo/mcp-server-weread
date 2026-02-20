@@ -11,6 +11,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import axios from "axios";
 import { WeReadApi } from "./WeReadApi.js";
 
 /**
@@ -54,10 +55,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: "get_bookshelf",
-        description: "Get all books in the user's bookshelf with comprehensive statistics and categorization information",
+        description: "Get books in the user's bookshelf with statistics. Returns stats and a condensed book list sorted by reading activity. Use search_books to find specific books.",
         inputSchema: {
           type: "object",
-          properties: {},
+          properties: {
+            limit: {
+              type: "integer",
+              description: "Maximum number of books to return (default 100)",
+              default: 100
+            }
+          },
           required: []
         }
       },
@@ -120,6 +127,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
+        name: "get_imported_book_highlights",
+        description: "Get highlights and notes from imported books (books with CB_ prefix) stored in the local web-highlighter service. These are books imported from outside WeRead that cannot be accessed via the WeRead API.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            keyword: {
+              type: "string",
+              description: "Filter by book title keyword (optional, returns all if omitted)"
+            }
+          },
+          required: []
+        }
+      },
+      {
         name: "get_book_best_reviews",
         description: "Get popular reviews for a specific book",
         inputSchema: {
@@ -152,16 +173,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
+// 单例，避免每次工具调用都重新初始化 Cookie
+const wereadApi = new WeReadApi();
+
 /**
  * 工具调用处理
  */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
-    const wereadApi = new WeReadApi();
 
     switch (request.params.name) {
       // 获取书架
       case "get_bookshelf": {
+        const limit = Number(request.params.arguments?.limit || 100);
         // 获取完整书架信息
         const entireShelfData = await wereadApi.getEntireShelf();
         // 获取有笔记的书籍信息
@@ -254,29 +278,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             categories = book.categories.map((cat: any) => cat.title);
           }
           
-          // 组装书籍信息
+          // 组装书籍信息（只保留核心字段）
           books.push({
             bookId: book.bookId || "",
             title: book.title || "",
             author: book.author || "",
-            translator: book.translator || "",
-            categories: categories,
-            bookLists: belongCategories,
-            publishTime: book.publishTime || "",
             finishReading: book.finishReading === 1,
-            price: book.price || 0,
-            paid: book.paid === 1,
-            isImported: book.bookId.startsWith('CB_'),
             progress: progressInfo ? progressInfo.progress : 0,
-            readingTime: progressInfo ? progressInfo.readingTime : 0, // 阅读时间（秒）
             readingTimeFormatted: formatReadingTime(progressInfo ? progressInfo.readingTime : 0),
-            updateTime: progressInfo ? new Date(progressInfo.updateTime * 1000).toISOString() : "",
             noteCount: notebookInfo ? notebookInfo.noteCount || 0 : 0,
-            reviewCount: notebookInfo ? notebookInfo.reviewCount || 0 : 0,
             bookmarkCount: notebookInfo ? notebookInfo.bookmarkCount || 0 : 0
           });
         }
         
+        // 按活跃度排序（有笔记 > 在读 > 其他），取前 limit 本
+        books.sort((a, b) => (b.noteCount + b.bookmarkCount + b.progress) - (a.noteCount + a.bookmarkCount + a.progress));
+        const limitedBooks = books.slice(0, limit);
+
         return {
           content: [{
             type: "text",
@@ -305,7 +323,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 smallestCategory
               },
               booklists,
-              books
+              books: limitedBooks
             }, null, 2)
           }]
         };
@@ -761,6 +779,59 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      // 获取导入书籍的划线和笔记（来自 web-highlighter）
+      case "get_imported_book_highlights": {
+        const keyword = request.params.arguments?.keyword
+          ? String(request.params.arguments.keyword).toLowerCase()
+          : null;
+
+        const response = await axios.get("http://localhost:3100/api/highlights", {
+          params: { domain: "weread.qq.com" },
+          timeout: 10000
+        });
+        const allHighlights: any[] = response.data || [];
+
+        // 从 title 字段提取书名（格式："书名 - 章节 - 作者 - 微信读书"）
+        const extractBookTitle = (title: string): string => {
+          const parts = title.split(" - ");
+          return parts[0]?.trim() || title;
+        };
+
+        // 按书名分组
+        const bookMap: Record<string, any> = {};
+        for (const h of allHighlights) {
+          const bookTitle = extractBookTitle(h.title || "");
+
+          if (keyword && !bookTitle.toLowerCase().includes(keyword)) continue;
+
+          if (!bookMap[bookTitle]) {
+            bookMap[bookTitle] = { book_title: bookTitle, highlights: [] };
+          }
+
+          bookMap[bookTitle].highlights.push({
+            text: h.text,
+            note: h.note || "",
+            timestamp: h.timestamp,
+            ...(h.type === "quick_note" ? { type: "quick_note" } : {})
+          });
+        }
+
+        const books = Object.values(bookMap);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              total_books: books.length,
+              total_highlights: allHighlights.filter(h =>
+                !keyword || extractBookTitle(h.title || "").toLowerCase().includes(keyword)
+              ).length,
+              books
+            }, null, 2)
+          }]
+        };
+      }
+
       // 获取书籍热门书评
       case "get_book_best_reviews": {
         const bookId = String(request.params.arguments?.book_id || "");
@@ -858,9 +929,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   } catch (error: any) {
     return {
-      error: {
-        message: error.message
-      }
+      isError: true,
+      content: [{
+        type: "text",
+        text: error.message
+      }]
     };
   }
 });
