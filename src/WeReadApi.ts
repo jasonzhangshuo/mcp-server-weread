@@ -315,9 +315,12 @@ export class WeReadApi {
         response = await this.axiosInstance.post(url, data, { params });
       }
       
-      if (response.data.errcode !== undefined && response.data.errcode !== 0) {
-        this.handleErrcode(response.data.errcode);
-        throw new Error(`API返回错误: ${response.data.errmsg || 'Unknown error'} (code: ${response.data.errcode})`);
+      // 兼容两种大小写：errcode（小写）和 errCode（大写 C）
+      const errcode = response.data.errcode ?? response.data.errCode;
+      const errmsg = response.data.errmsg || response.data.errMsg;
+      if (errcode !== undefined && errcode !== 0) {
+        this.handleErrcode(errcode);
+        throw new Error(`API返回错误: ${errmsg || 'Unknown error'} (code: ${errcode})`);
       }
       
       return response.data;
