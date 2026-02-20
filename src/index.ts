@@ -286,6 +286,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             finishReading: book.finishReading === 1,
             progress: progressInfo ? progressInfo.progress : 0,
             readingTimeFormatted: formatReadingTime(progressInfo ? progressInfo.readingTime : 0),
+            last_read_time: progressInfo?.updateTime
+              ? new Date(progressInfo.updateTime * 1000).toISOString()
+              : "",
             noteCount: notebookInfo ? notebookInfo.noteCount || 0 : 0,
             bookmarkCount: notebookInfo ? notebookInfo.bookmarkCount || 0 : 0
           });
@@ -510,7 +513,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!bookId) {
           throw new Error("书籍ID不能为空");
         }
-        
+
+        if (bookId.startsWith("CB_")) {
+          throw new Error("这是导入书籍，微信读书API不支持读取其笔记。请改用 get_imported_book_highlights 工具获取。");
+        }
+
         // 1. 获取书籍信息
         const bookInfo = await wereadApi.getBookinfo(bookId);
         const bookTitle = bookInfo.title || "";

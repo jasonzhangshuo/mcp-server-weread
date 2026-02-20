@@ -231,7 +231,8 @@ export class WeReadApi {
 
   private handleErrcode(errcode: number): void {
     if (errcode === -2012 || errcode === -2010) {
-      console.error("微信读书Cookie过期了，请参考文档重新设置。");
+      console.error("微信读书Cookie过期，尝试重新从CookieCloud获取...");
+      this.initialized = false; // 触发下次调用时重新初始化
     }
   }
 
